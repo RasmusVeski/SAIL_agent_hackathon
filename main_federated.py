@@ -7,12 +7,13 @@ from utils.model import FoodClassifier
 from utils.data_loader import create_dataloader
 from utils.training import train, evaluate
 from utils.logger_setup import setup_logging
-from utils.federated_utils import merge_models
+from utils.federated_utils import merge_payloads, update_global_model
+from utils.payload_utils import get_trainable_state_dict, serialize_payload, deserialize_and_verify_payload
 
 def main():
     """
-    Main function to simulate a simple 2-client federated learning round
-    using the new "agent-driven" partial merge.
+    Main function to simulate a MULTI-ROUND, HIGH-FREQUENCY merge loop.
+    This version is adapted to use the efficient payload workflow.
     """
     # --- 1. Setup ---
     setup_logging(log_dir="logs", log_file="federated_training.log")
@@ -26,12 +27,15 @@ def main():
     VAL_DIR = os.path.join(BASE_DIR, "test1")
 
     # --- 3. Hyperparameters ---
-    EPOCHS_PER_ROUND = 3 
+    NUM_ROUNDS = 10        # Run 10 full rounds of merging
+    EPOCHS_PER_ROUND = 1   # Clients ONLY train for 1 epoch before merging
+    
     LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-3
-    LR_SCHEDULER_STEP = 5
+    LR_SCHEDULER_STEP = 999 # Disable LR scheduler for this test
     BATCH_SIZE = 32
     NUM_WORKERS = 0
+    MU = 0.5               
 
     # --- 4. Load Data ---
     logging.info(f"Loading data for Client 0 ({CLIENT_0_DIR})")
@@ -47,77 +51,88 @@ def main():
         logging.error("Failed to load all dataloaders. Exiting.")
         return
 
-    # --- 5. Initialize Models ---
-    # Both clients start with the *same* initial model
-    model_0 = FoodClassifier()
-    model_1 = copy.deepcopy(model_0)
-    
+    # --- 5. Initialize Global Model ---
+    global_model = FoodClassifier()
     criterion = torch.nn.CrossEntropyLoss()
     
     # --- 6. Pre-Training Evaluation ---
     logging.info("--- Evaluating Base Model (Round 0) ---")
-    val_loss, val_acc, _, _ = evaluate(model_0, val_loader, device, criterion)
+    val_loss, val_acc, _, _ = evaluate(global_model, val_loader, device, criterion)
     logging.info(f"Round 0 Accuracy: {val_acc:.2f}%")
-    baseline_acc = val_acc
+    
+    # --- 7. Run Federated Learning Loop ---
+    for round_num in range(NUM_ROUNDS):
+        logging.info(f"\n--- STARTING FEDERATED ROUND {round_num + 1}/{NUM_ROUNDS} ---")
+        
+        # --- Client 0 Training ---
+        logging.info("--- Training Client 0 (FedProx, 1 epoch) ---")
+        model_0 = copy.deepcopy(global_model) # Client gets a copy
+        model_0, _ = train(
+            model=model_0,
+            train_loader=train_loader_0,
+            val_loader=None,
+            epochs=EPOCHS_PER_ROUND,
+            learning_rate=LEARNING_RATE,
+            device=device,
+            weight_decay=WEIGHT_DECAY,
+            lr_scheduler_step_size=LR_SCHEDULER_STEP,
+            global_model=global_model, 
+            mu=MU
+        )
+        
+        # --- Client 1 Training ---
+        logging.info("--- Training Client 1 (FedProx, 1 epoch) ---")
+        model_1 = copy.deepcopy(global_model) # Client gets a copy
+        model_1, _ = train(
+            model=model_1,
+            train_loader=train_loader_1,
+            val_loader=None,
+            epochs=EPOCHS_PER_ROUND,
+            learning_rate=LEARNING_RATE,
+            device=device,
+            weight_decay=WEIGHT_DECAY,
+            lr_scheduler_step_size=LR_SCHEDULER_STEP,
+            global_model=global_model,
+            mu=MU
+        )
 
-    # --- 7. FEDERATED ROUND 1 ---
-    logging.info("\n--- STARTING FEDERATED ROUND 1 ---")
-    
-    # Client 0 trains locally
-    logging.info("--- Training Client 0 ---")
-    model_0, history_0 = train(
-        model=model_0,
-        train_loader=train_loader_0,
-        val_loader=val_loader, 
-        epochs=EPOCHS_PER_ROUND,
-        learning_rate=LEARNING_RATE,
-        device=device,
-        val_frequency=EPOCHS_PER_ROUND,
-        weight_decay=WEIGHT_DECAY,
-        lr_scheduler_step_size=LR_SCHEDULER_STEP
-    )
-    
-    # Client 1 trains locally
-    logging.info("--- Training Client 1 ---")
-    model_1, history_1 = train(
-        model=model_1,
-        train_loader=train_loader_1,
-        val_loader=val_loader,
-        epochs=EPOCHS_PER_ROUND,
-        learning_rate=LEARNING_RATE,
-        device=device,
-        val_frequency=EPOCHS_PER_ROUND,
-        weight_decay=WEIGHT_DECAY,
-        lr_scheduler_step_size=LR_SCHEDULER_STEP
-    )
+        # --- Server-Side Payload Extraction & Verification ---
+        logging.info("\n--- SERVER: Extracting and Verifying Payloads ---")
+        
+        # Extract payload from Client 0
+        payload_0 = get_trainable_state_dict(model_0)
+        bytes_0 = serialize_payload(payload_0)
+        verified_payload_0 = deserialize_and_verify_payload(bytes_0, global_model)
+        
+        # Extract payload from Client 1
+        payload_1 = get_trainable_state_dict(model_1)
+        bytes_1 = serialize_payload(payload_1)
+        verified_payload_1 = deserialize_and_verify_payload(bytes_1, global_model)
+        
+        if not verified_payload_0 or not verified_payload_1:
+            logging.error("Payload verification failed. Skipping merge.")
+            continue
 
-    acc_0 = history_0[-1]['val_acc']
-    acc_1 = history_1[-1]['val_acc']
-    logging.info(f"Client 0 final acc: {acc_0:.2f}%")
-    logging.info(f"Client 1 final acc: {acc_1:.2f}%")
+        # --- Server-Side Merge Step ---
+        logging.info("\n--- SERVER: Merging Payloads ---")
+        merge_alpha = 0.5 
+        logging.info(f"Agent strategy: merging with alpha = {merge_alpha}")
+        
+        # Use the NEW merge_payloads function
+        merged_payload = merge_payloads(verified_payload_0, verified_payload_1, alpha=merge_alpha)
 
-    # --- 8. Merge Step (The "Agent" Logic) ---
-    logging.info("\n--- MERGING MODELS (Agent Logic) ---")
-    
-    # This is the "hyperparameter" your agent would choose.
-    # For now, we simulate a simple 50/50 average.
-    # A smart agent might choose alpha=0.9 if acc_0 > acc_1.
-    # A competitive agent might choose alpha=0.0 to steal all of model_1's weights.
-    
-    merge_alpha = 0.5 
-    logging.info(f"Agent strategy: merging with alpha = {merge_alpha}")
-    
-    # We merge Client 0's model with Client 1's model.
-    global_model = merge_models(model_0, model_1, alpha=merge_alpha)
+        # --- Server-Side Global Model Update ---
+        # Use the NEW update_global_model function
+        update_global_model(global_model, merged_payload)
 
-    # --- 9. Evaluate Merged Model ---
-    logging.info("--- Evaluating Merged Global Model ---")
-    merged_val_loss, merged_val_acc, _, _ = evaluate(global_model, val_loader, device, criterion)
+        # --- Server-Side Evaluation Step ---
+        logging.info(f"--- Evaluating Merged Global Model (Round {round_num + 1}) ---")
+        merged_val_loss, merged_val_acc, _, _ = evaluate(global_model, val_loader, device, criterion)
+        
+        logging.info(f"Merged Global (Round {round_num + 1}) Accuracy: {merged_val_acc:.2f}%")
     
-    logging.info(f"Baseline (Round 0) Accuracy: {baseline_acc:.2f}%")
-    logging.info(f"Merged Global (Round 1) Accuracy: {merged_val_acc:.2f}%")
-    
-    logging.info("Federated simulation finished.")
+    logging.info("\nFederated simulation finished.")
+    logging.info(f"Final model accuracy: {merged_val_acc:.2f}%")
 
 
 if __name__ == "__main__":

@@ -38,7 +38,8 @@ def evaluate(model, val_loader, device, criterion):
     return avg_val_loss, accuracy, correct, total
 
 def train(model, train_loader, val_loader, epochs, learning_rate, device, 
-          val_frequency=1, weight_decay=0.0, lr_scheduler_step_size=7):
+          val_frequency=1, weight_decay=0.0, lr_scheduler_step_size=7,
+          global_model=None, mu=0.0):
     """
     A standalone training function for an agent's model.
     Now includes weight_decay, a scheduler, and returns a metrics history.
@@ -53,6 +54,9 @@ def train(model, train_loader, val_loader, epochs, learning_rate, device,
     - val_frequency (int): Run validation every N epochs.
     - weight_decay (float): L2 regularization strength.
     - lr_scheduler_step_size (int): Step size for the learning rate scheduler.
+    - global_model (nn.Module): The starting "global model" for the round.
+                                Used to calculate the FedProx proximal term.
+    - mu (float): The strength of the FedProx proximal term (the "elastic band").
     
     Returns:
     - model (nn.Module): The trained model.
@@ -89,6 +93,11 @@ def train(model, train_loader, val_loader, epochs, learning_rate, device,
         })
     
     logging.info(f"Starting training on {device} for {epochs} epochs...")
+
+    if mu > 0 and global_model is not None:
+        logging.info(f"--- FedProx Training Enabled (mu={mu}) ---")
+        # Ensure global model is on the same device
+        global_model.to(device)
     
     for epoch in range(epochs):
         # --- 2. Training Phase ---
@@ -109,6 +118,20 @@ def train(model, train_loader, val_loader, epochs, learning_rate, device,
             optimizer.zero_grad()
             outputs = model(data)
             loss = criterion(outputs, labels)
+
+            # Add FedProx "elastic band" term
+            if mu > 0 and global_model is not None:
+                proximal_term = 0.0
+                # Iterate over trainable parameters only
+                for (name, local_param), (global_name, global_param) in zip(
+                    model.named_parameters(), global_model.named_parameters()
+                ):
+                    if local_param.requires_grad:
+                        # Calculate the L2 norm (squared distance)
+                        proximal_term += (local_param - global_param.to(device)).norm(2) ** 2
+                
+                loss += (mu / 2) * proximal_term
+
             loss.backward()
             optimizer.step()
             
