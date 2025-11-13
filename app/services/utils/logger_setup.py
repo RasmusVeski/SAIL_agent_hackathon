@@ -42,28 +42,36 @@ def setup_logging(log_dir="logs", log_file="training.log"):
 
     # set up logging for the new run
     logger = logging.getLogger()
+    logger.setLevel(logging.INFO) # Set level on the logger itself
     
-    if not logger.hasHandlers():
-        logger.setLevel(logging.INFO)
 
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 
+     ## 1. Check for a FileHandler
+    # We check the *specific file path* to avoid issues if another
+    # process (like Agent_B) already set up a *different* file handler.
+    # In our case, they are separate processes, so this check is simpler.
+    if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
         # --- File Handler (for current log) ---
         fh = logging.FileHandler(log_path, mode='w')
         fh.setLevel(logging.INFO)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
+        logging.info("File logging configured. Outputting to %s", log_path)
+        if 'archive_file_path' in locals():
+            logging.info("Archived previous log to %s", archive_file_path)
+    else:
+        logging.info("FileHandler already configured.")
 
+    # 2. Check for a StreamHandler (Console)
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
         # --- Console (Stream) Handler ---
         sh = logging.StreamHandler(sys.stdout)
         sh.setLevel(logging.INFO)
         sh.setFormatter(formatter)
         logger.addHandler(sh)
-        
-        logging.info("Logging configured. Outputting to console and %s", log_path)
-        if 'archive_file_path' in locals():
-            logging.info("Archived previous log to %s", archive_file_path)
+        logging.info("Console logging configured.")
     else:
-        logging.info("Logger already configured.")
+        logging.info("StreamHandler already configured.")

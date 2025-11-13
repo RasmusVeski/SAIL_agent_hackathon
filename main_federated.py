@@ -11,7 +11,7 @@ from utils.federated_utils import merge_payloads, update_global_model
 from utils.payload_utils import get_trainable_state_dict, serialize_payload, deserialize_and_verify_payload
 
 def main():
-    """
+    """ 
     Main function to simulate a MULTI-ROUND, HIGH-FREQUENCY merge loop.
     This version is adapted to use the efficient payload workflow.
     """

@@ -1,0 +1,543 @@
+import torch
+import os
+import logging
+import copy
+import threading
+import asyncio
+import time
+import uvicorn
+import httpx
+from pydantic import BaseModel
+from uuid import uuid4
+import argparse
+import functools
+
+
+# --- A2A Framework Imports ---
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.events import EventQueue
+from a2a.client import (
+    A2AClient, 
+    A2ACardResolver, 
+    ClientFactory, 
+    ClientConfig 
+)
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentSkill,
+    Message,
+    MessageSendParams,
+    SendMessageRequest,
+    Part,
+    DataPart,
+    TextPart,
+    JSONRPCErrorResponse,
+    SendMessageSuccessResponse,
+    Task
+)
+from a2a.utils import new_agent_text_message
+
+
+# --- Utility Imports ---
+import sys
+# Add the 'services' directory to the Python path to allow imports like 'utils.model'
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from utils.model import FoodClassifier
+from utils.data_loader import create_dataloader
+from utils.training import train, evaluate
+from utils.logger_setup import setup_logging
+from utils.federated_utils import merge_payloads, update_global_model
+from utils.payload_utils import (
+    get_trainable_state_dict, 
+    serialize_payload_to_b64, 
+    deserialize_payload_from_b64
+)
+
+
+# --- 1. Agent Configuration ---
+# EDIT THESE VALUES
+#AGENT_ID = "Agent_A"
+#MY_PORT = 9000
+#PARTNER_AGENT_URL = "http://localhost:9001" # URL of the agent to federate with
+#MY_DATA_DIR_NAME = "client_0" # e.g., "client_0"
+#VAL_DATA_DIR_NAME = "test1"
+#BASE_DATA_DIR = "./app/sharded_data"
+
+
+# Training Hyperparameters
+NUM_ROUNDS = 20 # Number of rounds to *initiate*
+AGENT_HPS = {
+    'epochs': 1, 
+    'learning_rate': 1e-4, 
+    'weight_decay': 1e-3, 
+    'mu': 0.5, # FedProx term
+    'val_frequency': 1,       
+    'lr_scheduler_step_size': 999
+}
+
+
+# --- 2. Shared Agent State ---
+# This class holds the agent's model, data, and other state.
+# It will be shared between the A2A server thread and the initiator thread.
+class AgentState:
+    def __init__(self):
+        self.agent_id = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.global_model = None
+        self.train_loader = None
+        self.val_loader = None
+        self.criterion = None
+        self.round_num = 0
+        self.agent_hps = AGENT_HPS
+        # lock for thread-safe model updates
+        self.model_lock = threading.Lock()
+
+
+# Create a single, global instance of our agent's state
+state_singleton = AgentState()
+
+
+# Define the Pydantic model for JSON payload exchanged by agents
+class WeightExchangePayload(BaseModel):
+    agent_id: str
+    payload_b64: str
+
+
+# --- 3. A2A Responder Logic (The "Reactive" Part) ---
+# This Executor handles *incoming* requests from other agents.
+class FederatedAgentExecutor(AgentExecutor):
+    
+    def __init__(self, state: AgentState):
+        self.state = state
+
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+
+        logging.info(f"--- {self.state.agent_id} | RESPONDER ---")
+        logging.info("Received federated_weight_exchange request.")
+        
+        # 1. Deserialize and verify initiator's payload from the request
+        try:
+            if not context.message.parts:
+                raise ValueError("Request message has no parts")
+            
+            # A Part is a RootModel, so we access its content via .root
+            part_root = context.message.parts[0].root
+
+            # Check for the correct kind: 'data'
+            if part_root.kind != 'data':
+                raise ValueError(f"Expected part kind 'data', but got '{part_root.kind}'")
+                
+            request_data_dict = part_root.data
+            request_data = WeightExchangePayload(**request_data_dict)
+
+            initiator_payload = deserialize_payload_from_b64(
+                request_data.payload_b64, self.state.global_model
+            )
+
+            if not initiator_payload:
+                raise ValueError("Received corrupt payload")
+            logging.info(f"Received valid payload from {request_data.agent_id}")
+            
+        except Exception as e:
+            logging.error(f"Payload deserialization failed: {e}")
+            await event_queue.enqueue_event(
+                new_agent_text_message(f"Error: Corrupt payload: {e}")
+            )
+            return
+
+        # --- This is the core logic from your FastAPI responder ---
+        
+        # 2. Train our *own* local model
+        # We acquire a lock to ensure the initiator thread isn't
+        # modifying the model at the same time.
+        with self.state.model_lock:
+            logging.info("Training local model (as responder)...")
+            local_model, _ = train(
+                model=copy.deepcopy(self.state.global_model),
+                train_loader=self.state.train_loader,
+                val_loader=None,
+                global_model=self.state.global_model, # For FedProx
+                device=self.state.device,
+                **self.state.agent_hps
+            )
+
+        # 3. Prepare *our* payload to send back
+        my_payload = get_trainable_state_dict(local_model)
+        my_payload_b64 = serialize_payload_to_b64(my_payload)
+
+        # 4. Send our payload back as the response
+        response_payload = WeightExchangePayload(
+            agent_id=self.state.agent_id,
+            payload_b64=my_payload_b64
+        )
+        
+        
+        # 5. Manually build the JSON response message
+        try:
+            # Create the specific DataPart
+            response_data_part = DataPart(data=response_payload.model_dump())
+            # Create the generic Part wrapper
+            response_part = Part(root=response_data_part)
+            # Create the Message
+            response_message = Message(
+                role='agent',
+                parts=[response_part],
+                messageId=uuid4().hex
+            )
+            
+            # 6. Send our message back to the event queue
+            await event_queue.enqueue_event(response_message)
+            logging.info("Sent responder payload in response.")
+
+        except Exception as e:
+            logging.error(f"Failed to build or enqueue response message: {e}")
+            await event_queue.enqueue_event(
+                new_agent_text_message(f"Error: Failed to build response: {e}")
+            )
+            return
+
+        # 5. Merge! (We have both payloads now)
+        # We lock again to safely update the shared global_model
+        with self.state.model_lock:
+            logging.info("Merging payloads...")
+            merged_payload = merge_payloads(my_payload, initiator_payload, alpha=0.5)
+            
+            # 6. Update our global model
+            update_global_model(self.state.global_model, merged_payload)
+            self.state.round_num += 1 # Increment round
+            
+            # 7. Evaluate
+            val_loss, val_acc, _, _ = evaluate(
+                self.state.global_model, self.state.val_loader, self.state.device, self.state.criterion
+            )
+            logging.info(f"Round {self.state.round_num} (Responder) Merged Accuracy: {val_acc:.2f}%")
+
+    async def cancel(
+        self, context: RequestContext, event_queue: EventQueue
+    ) -> None:
+        logging.warning("Cancel not supported")
+        await event_queue.enqueue_event(new_agent_text_message("Error: Cancel not supported"))
+    
+
+
+
+
+# --- 4. A2A Initiator Logic (The "Proactive" Part) ---
+
+async def get_partner_client(httpx_client: httpx.AsyncClient, partner_url: str) -> A2AClient | None:
+    """
+    Resolves the partner's agent card and initializes an A2AClient.
+    Retries a few times if the partner server isn't up yet.
+    """
+    resolver = A2ACardResolver(
+        httpx_client=httpx_client,
+        base_url=partner_url,
+    )
+    
+    for attempt in range(5):
+        try:
+            logging.info(f"Attempting to resolve partner card at {partner_url}...")
+            partner_card = await resolver.get_agent_card()
+            logging.info(f"Successfully resolved partner: {partner_card.name}")
+            
+            config = ClientConfig(httpx_client=httpx_client)
+
+            return await ClientFactory.connect(
+                agent=partner_card,
+                client_config=config
+            )
+        except Exception as e:
+            logging.warning(f"Failed to resolve partner card (attempt {attempt+1}/5): {e}")
+            await asyncio.sleep(10) # Wait 10s before retrying
+    
+    logging.error("Could not resolve partner agent card. Initiator loop will not run.")
+    return None
+
+# This loop runs in a separate thread to *initiate* requests.
+async def initiator_loop(state: AgentState, partner_url: str):
+    """
+    The main proactive federated learning loop.
+    Runs async in a separate thread.
+    """
+    logging.info(f"--- {state.agent_id} | INITIATOR ---")
+    logging.info(f"Starting initiator loop. Will federate with {partner_url}")
+    
+    async with httpx.AsyncClient(timeout=120.0) as httpx_client:
+        
+        # 1. Get the client for our partner agent
+        client = await get_partner_client(httpx_client, partner_url)
+        if not client:
+            return # Failed to connect to partner
+
+        for round_num in range(NUM_ROUNDS):
+            state.round_num += 1
+            logging.info(f"\n--- {state.agent_id} | Initiator Round {state.round_num}/{NUM_ROUNDS} ---")
+        
+            # 2. Train local model
+            # We lock the model to ensure we get a clean copy
+            with state.model_lock:
+                logging.info("Training local model (as initiator)...")
+                current_global_model = copy.deepcopy(state.global_model)
+        
+            local_model, _ = train(
+                model=current_global_model, # Train on the copied model
+                train_loader=state.train_loader,
+                val_loader=None,
+                global_model=current_global_model, # For FedProx
+                device=state.device,
+                **state.agent_hps
+            )
+
+            # 2b. Prepare *our* payload
+            my_payload = get_trainable_state_dict(local_model)
+            my_payload_b64 = serialize_payload_to_b64(my_payload)
+            request_payload_obj = WeightExchangePayload(
+                agent_id=state.agent_id,
+                payload_b64=my_payload_b64
+            )
+
+            # 2c.
+            # Build the A2A SendMessageRequest
+            logging.info("Sending initiator payload to partner...")
+            try:
+                # Create the JSON message part
+                message_part_data = {
+                    "kind": "data",
+                    "data": request_payload_obj.model_dump()
+                }
+                
+                # Create the request
+                message_to_send = Message(
+                    role="user",
+                    parts=[message_part_data],
+                    messageId=uuid4().hex
+                )
+
+                # Send the message
+                response_generator = client.send_message(message_to_send)
+                response_item = None
+                async for item in response_generator:
+                    response_item = item
+                    break # We expect only one item, so we break
+
+                if response_item is None:
+                    raise Exception("Agent did not return a response")
+                
+                
+                response_message: Message | None = None
+
+                # The generator yields either a Message or a ClientEvent (Task, update)
+                if isinstance(response_item, Message):
+                    # This is the simple case. The response is the message.
+                    response_message = response_item
+                elif isinstance(response_item, tuple) and isinstance(response_item[0], Task):
+                    # This is a ClientEvent (Task, update)
+                    task: Task = response_item[0]
+                    if task.history:
+                        response_message = task.history[-1] # Get last message from task
+                    else:
+                        raise Exception("Received a Task object with no history")
+                else:
+                    raise Exception(f"Received unexpected response type: {type(response_item)}")
+                
+                if not response_message.parts:
+                    raise ValueError("Response message has no parts")
+                
+                part_root = response_message.parts[0].root
+                if part_root.kind != 'data':
+                    raise ValueError(f"Response part is not 'data', got {part_root.kind}")
+                
+                response_data_dict = part_root.data
+                response_data = WeightExchangePayload(**response_data_dict)
+                
+                responder_payload = deserialize_payload_from_b64(
+                    response_data.payload_b64, state.global_model
+                )
+                if not responder_payload:
+                    raise ValueError("Received corrupt payload from responder")
+                
+                logging.info(f"Received valid payload from {response_data.agent_id}")
+
+            
+                # 2e. Merge, Update, and Evaluate (with lock)
+                with state.model_lock:
+                    logging.info("Merging payloads... (as Initiator)")
+                    merged_payload = merge_payloads(my_payload, responder_payload, alpha=0.5)
+
+                    # 6. Update our global model
+                    update_global_model(state.global_model, merged_payload)
+                    
+                    # 7. Evaluate
+                    val_loss, val_acc, _, _ = evaluate(
+                        state.global_model, state.val_loader, state.device, state.criterion
+                    )
+                    logging.info(f"Round {state.round_num} (Initiator) Merged Accuracy: {val_acc:.2f}%")
+
+            except Exception as e:
+                logging.error(f"Weight exchange failed for round {state.round_num}: {e}", exc_info=True)
+                logging.error("Skipping merge for this round.")
+                await asyncio.sleep(10) #wait before retrying
+                continue
+        
+        # Wait before starting the next round
+        logging.info(f"Round {state.round_num} complete. Waiting 30s...")
+        await asyncio.sleep(30)
+    
+    logging.info(f"--- {state.agent_id} | INITIATOR FINISHED ---")
+
+
+
+def run_initiator_in_thread(state: AgentState, partner_url: str):
+    """
+    Synchronous wrapper to run the async initiator loop in a new thread.
+    """
+    logging.info("Starting initiator thread...")
+    # Give the Uvicorn server 10s to start up before we try to connect
+    time.sleep(10) 
+    try:
+        asyncio.run(initiator_loop(state, partner_url))
+    except Exception as e:
+        logging.error(f"Initiator loop crashed: {e}", exc_info=True)
+
+
+
+# --- 5. Server Startup & Main ---
+
+async def on_startup(args: argparse.Namespace):
+    """
+    A2A server startup event handler.
+    """
+    log_file = f"agent_{args.agent_id.lower()}.log"
+    setup_logging(log_dir="logs", log_file=log_file)
+    
+    state_singleton.agent_id = args.agent_id
+    logging.info(f"--- {state_singleton.agent_id} | STARTING UP on port {args.port} ---")
+    
+    client_data_path = os.path.join(args.base_data_dir, args.data_dir_name)
+    val_data_path = os.path.join(args.base_data_dir, args.val_dir_name)
+    
+    logging.info(f"Loading training data from: {client_data_path}")
+    logging.info(f"Loading validation data from: {val_data_path}")
+    
+    state_singleton.train_loader = create_dataloader(client_data_path, 32, shuffle=True, num_workers=0)
+    state_singleton.val_loader = create_dataloader(val_data_path, 32, shuffle=False, num_workers=0)
+    
+    if not state_singleton.train_loader or not state_singleton.val_loader:
+        logging.error("Failed to load data. Server cannot function.")
+        return
+
+    state_singleton.global_model = FoodClassifier()
+    state_singleton.criterion = torch.nn.CrossEntropyLoss()
+    
+    val_loss, val_acc, _, _ = evaluate(
+        state_singleton.global_model, state_singleton.val_loader, state_singleton.device, state_singleton.criterion
+    )
+    logging.info(f"Round 0 Initial Accuracy: {val_acc:.2f}%")
+    
+    thread = threading.Thread(
+        target=run_initiator_in_thread, 
+        args=(state_singleton, args.partner_url)
+    )
+    thread.daemon = True 
+    thread.start()
+    
+    logging.info(f"--- {state_singleton.agent_id} | READY ---")
+
+
+
+if __name__ == '__main__':
+    # --- Define and Parse Command-Line Arguments ---
+    parser = argparse.ArgumentParser(description="A2A Federated Learning Agent")
+    parser.add_argument(
+        "--agent-id", 
+        type=str, 
+        required=True, 
+        help="Unique name for this agent (e.g., Agent_A)"
+    )
+    parser.add_argument(
+        "--port", 
+        type=int, 
+        required=True, 
+        help="Port for this agent's server to run on (e.g., 9000)"
+    )
+    parser.add_argument(
+        "--partner-url", 
+        type=str, 
+        required=True, 
+        help="Full URL of the agent partner (e.g., http://localhost:9001)"
+    )
+    parser.add_argument(
+        "--data-dir-name", 
+        type=str, 
+        required=True, 
+        help="Name of the data subfolder for this agent (e.g., client_0)"
+    )
+    parser.add_argument(
+        "--val-dir-name", 
+        type=str, 
+        default="test1", 
+        help="Name of the validation data subfolder (default: test1)"
+    )
+    parser.add_argument(
+        "--base-data-dir", 
+        type=str, 
+        default="./app/sharded_data",
+        help="Path to the root 'sharded_data' directory"
+    )
+    
+    args = parser.parse_args()
+    # 1. Define the Agent's "Skill"
+    # Required by A2A
+    skill = AgentSkill(
+        id='federated_weight_exchange',
+        name='Federated Weight Exchange',
+        description='Executes one round of federated learning by exchanging model payloads.',
+        tags=['federated-learning', 'model-exchange'],
+        examples=['<json_payload>'],
+        input_data_model=WeightExchangePayload,
+        output_data_model=WeightExchangePayload,
+    )
+
+    # 2. Define the Agent's Public "Business Card"
+    # Required by A2A
+    public_agent_card = AgentCard(
+        name=f'Federated Learning Agent ({args.agent_id})',
+        description='An agent that participates in federated learning.',
+        url=f'http://localhost:{args.port}/',
+        version='1.0.0',
+        default_input_modes=['data'],
+        default_output_modes=['data'],
+        capabilities=AgentCapabilities(streaming=False),
+        skills=[skill],
+        supports_authenticated_extended_card=False,
+    )
+
+    # 3. Create the Request Handler
+    request_handler = DefaultRequestHandler(
+        agent_executor=FederatedAgentExecutor(state_singleton),
+        task_store=InMemoryTaskStore(),
+    )
+
+    # 4. Create the A2A Server Application
+    server = A2AStarletteApplication(
+        agent_card=public_agent_card,
+        http_handler=request_handler,
+    )
+    
+    # 5. Build the app and add our startup hook
+    app = server.build()
+    startup_handler = functools.partial(on_startup, args=args)
+    app.add_event_handler("startup", startup_handler)
+
+    # 6. Run the Uvicorn server
+    logging.info(f"Starting A2A server for {args.agent_id} on 0.0.0.0:{args.port}")
+    uvicorn.run(app, host='0.0.0.0', port=args.port)
