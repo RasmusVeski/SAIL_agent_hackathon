@@ -470,6 +470,12 @@ if __name__ == '__main__':
         help="Port for this agent's server to run on (e.g., 9000)"
     )
     parser.add_argument(
+        "--public-url", 
+        type=str, 
+        required=True,
+        help="This agent's own public-facing URL (e.g., http://100.x.y.z:9000)"
+    )
+    parser.add_argument(
         "--partner-url", 
         type=str, 
         required=True, 
@@ -512,7 +518,7 @@ if __name__ == '__main__':
     public_agent_card = AgentCard(
         name=f'Federated Learning Agent ({args.agent_id})',
         description='An agent that participates in federated learning.',
-        url=f'http://localhost:{args.port}/',
+        url=args.public_url,
         version='1.0.0',
         default_input_modes=['data'],
         default_output_modes=['data'],
