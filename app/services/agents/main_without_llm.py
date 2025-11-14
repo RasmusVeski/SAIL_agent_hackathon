@@ -9,8 +9,9 @@ import uvicorn
 import httpx
 from pydantic import BaseModel
 from uuid import uuid4
-import argparse
 import functools
+import sys
+from dotenv import load_dotenv
 
 
 # --- A2A Framework Imports ---
@@ -43,7 +44,6 @@ from a2a.utils import new_agent_text_message
 
 
 # --- Utility Imports ---
-import sys
 # Add the 'services' directory to the Python path to allow imports like 'utils.model'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -58,15 +58,19 @@ from utils.payload_utils import (
     deserialize_payload_from_b64
 )
 
+load_dotenv()
 
 # --- 1. Agent Configuration ---
-# EDIT THESE VALUES
-#AGENT_ID = "Agent_A"
-#MY_PORT = 9000
-#PARTNER_AGENT_URL = "http://localhost:9001" # URL of the agent to federate with
-#MY_DATA_DIR_NAME = "client_0" # e.g., "client_0"
-#VAL_DATA_DIR_NAME = "test1"
-#BASE_DATA_DIR = "./app/sharded_data"
+# Defined in .env
+AGENT_ID = os.getenv("AGENT_ID")
+PORT = int(os.getenv("PORT"))
+PUBLIC_URL = os.getenv("PUBLIC_URL")
+BASE_DATA_DIR = os.getenv("BASE_DATA_DIR")
+DATA_DIR_NAME = os.getenv("DATA_DIR_NAME")
+VAL_DIR_NAME = os.getenv("VAL_DIR_NAME")
+
+PARTNER_URLS_STR = os.getenv("PARTNER_URLS")
+PARTNER_URLS = [url.strip() for url in PARTNER_URLS_STR.split(',') if url.strip()]
 
 
 # Training Hyperparameters
@@ -412,18 +416,18 @@ def run_initiator_in_thread(state: AgentState, partner_url: str):
 
 # --- 5. Server Startup & Main ---
 
-async def on_startup(args: argparse.Namespace):
+async def on_startup():
     """
     A2A server startup event handler.
     """
-    log_file = f"agent_{args.agent_id.lower()}.log"
+    log_file = f"agent_{AGENT_ID.lower()}.log"
     setup_logging(log_dir="logs", log_file=log_file)
     
-    state_singleton.agent_id = args.agent_id
-    logging.info(f"--- {state_singleton.agent_id} | STARTING UP on port {args.port} ---")
+    state_singleton.agent_id = AGENT_ID
+    logging.info(f"--- {state_singleton.agent_id} | STARTING UP on port {PORT} ---")
     
-    client_data_path = os.path.join(args.base_data_dir, args.data_dir_name)
-    val_data_path = os.path.join(args.base_data_dir, args.val_dir_name)
+    client_data_path = os.path.join(BASE_DATA_DIR, DATA_DIR_NAME)
+    val_data_path = os.path.join(BASE_DATA_DIR, VAL_DIR_NAME)
     
     logging.info(f"Loading training data from: {client_data_path}")
     logging.info(f"Loading validation data from: {val_data_path}")
@@ -442,10 +446,13 @@ async def on_startup(args: argparse.Namespace):
         state_singleton.global_model, state_singleton.val_loader, state_singleton.device, state_singleton.criterion
     )
     logging.info(f"Round 0 Initial Accuracy: {val_acc:.2f}%")
+
+    partner_url_to_use = PARTNER_URLS[0] #Temporary single peer network
+    logging.info(f"Initiator will target partner: {partner_url_to_use}")
     
     thread = threading.Thread(
         target=run_initiator_in_thread, 
-        args=(state_singleton, args.partner_url)
+        args=(state_singleton, partner_url_to_use)
     )
     thread.daemon = True 
     thread.start()
@@ -455,52 +462,7 @@ async def on_startup(args: argparse.Namespace):
 
 
 if __name__ == '__main__':
-    # --- Define and Parse Command-Line Arguments ---
-    parser = argparse.ArgumentParser(description="A2A Federated Learning Agent")
-    parser.add_argument(
-        "--agent-id", 
-        type=str, 
-        required=True, 
-        help="Unique name for this agent (e.g., Agent_A)"
-    )
-    parser.add_argument(
-        "--port", 
-        type=int, 
-        required=True, 
-        help="Port for this agent's server to run on (e.g., 9000)"
-    )
-    parser.add_argument(
-        "--public-url", 
-        type=str, 
-        required=True,
-        help="This agent's own public-facing URL (e.g., http://100.x.y.z:9000)"
-    )
-    parser.add_argument(
-        "--partner-url", 
-        type=str, 
-        required=True, 
-        help="Full URL of the agent partner (e.g., http://localhost:9001)"
-    )
-    parser.add_argument(
-        "--data-dir-name", 
-        type=str, 
-        required=True, 
-        help="Name of the data subfolder for this agent (e.g., client_0)"
-    )
-    parser.add_argument(
-        "--val-dir-name", 
-        type=str, 
-        default="test1", 
-        help="Name of the validation data subfolder (default: test1)"
-    )
-    parser.add_argument(
-        "--base-data-dir", 
-        type=str, 
-        default="./app/sharded_data",
-        help="Path to the root 'sharded_data' directory"
-    )
-    
-    args = parser.parse_args()
+
     # 1. Define the Agent's "Skill"
     # Required by A2A
     skill = AgentSkill(
@@ -516,9 +478,9 @@ if __name__ == '__main__':
     # 2. Define the Agent's Public "Business Card"
     # Required by A2A
     public_agent_card = AgentCard(
-        name=f'Federated Learning Agent ({args.agent_id})',
+        name=f'Federated Learning Agent ({AGENT_ID})',
         description='An agent that participates in federated learning.',
-        url=args.public_url,
+        url=PUBLIC_URL,
         version='1.0.0',
         default_input_modes=['data'],
         default_output_modes=['data'],
@@ -541,9 +503,9 @@ if __name__ == '__main__':
     
     # 5. Build the app and add our startup hook
     app = server.build()
-    startup_handler = functools.partial(on_startup, args=args)
+    startup_handler = functools.partial(on_startup, config=config_data)
     app.add_event_handler("startup", startup_handler)
 
     # 6. Run the Uvicorn server
-    logging.info(f"Starting A2A server for {args.agent_id} on 0.0.0.0:{args.port}")
-    uvicorn.run(app, host='0.0.0.0', port=args.port)
+    logging.info(f"Starting A2A server for {AGENT_ID} on 0.0.0.0:{PORT}")
+    uvicorn.run(app, host='0.0.0.0', port=PORT)
