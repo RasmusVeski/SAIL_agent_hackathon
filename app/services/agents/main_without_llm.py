@@ -78,6 +78,8 @@ VAL_DIR_NAME = os.getenv("VAL_DIR_NAME", "test1")
 PARTNER_URLS_STR = os.getenv("PARTNER_URLS")
 PARTNER_URLS = [url.strip() for url in PARTNER_URLS_STR.split(',') if url.strip()]
 
+logging.info(f"RUNNING NEWEST VERSION")
+
 
 # Training Hyperparameters
 NUM_ROUNDS = 20 # Number of rounds to *initiate*
