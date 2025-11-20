@@ -21,6 +21,10 @@ def get_trainable_state_dict(model: nn.Module) -> dict:
     if not trainable_names:
         logging.warning("get_trainable_state_dict: No trainable parameters found.")
         return {}
+    
+    #print(f"--- DEBUG: Found {len(trainable_names)} trainable layers ---")
+    #for name in trainable_names:
+    #    print(f" >> Layer: {name}")
 
     # Create a new state dict containing only those parameters
     # We detach().clone() to avoid sending the entire computation graph
@@ -30,6 +34,7 @@ def get_trainable_state_dict(model: nn.Module) -> dict:
             trainable_state_dict[name] = param.detach().clone()
             
     logging.debug(f"Extracted {len(trainable_state_dict)} trainable parameter groups.")
+
     return trainable_state_dict
 
 

@@ -63,6 +63,8 @@ def train(model, train_loader, val_loader, epochs, learning_rate, device,
     - history (list): A list of dictionaries containing metrics for each validation step.
     """
     
+    torch.set_num_threads(1) #Fix cpu usage so network doesn't die
+
     history = []
     criterion = nn.CrossEntropyLoss()
     
