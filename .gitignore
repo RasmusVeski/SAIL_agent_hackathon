@@ -2,6 +2,7 @@ logs
 sharded_data
 __pycache__/
 *.py[cod]
-.env
+.env*
 app/logs
 app/sharded_data
+mock_run
