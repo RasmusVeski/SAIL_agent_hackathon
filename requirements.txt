@@ -9,6 +9,12 @@ tqdm==4.67.0
 a2a-sdk[http-server]==0.3.11
 pydantic==2.12.3
 
+# --- Langgraph ---
+openai
+langchain-community
+langchain-openai
+langgraph
+
 # --- Web Server & Client ---
 uvicorn[standard]==0.38.0
 httpx==0.28.1
@@ -22,3 +28,4 @@ black==24.10.0
 isort==5.13.2
 pycodestyle==2.12.1
 pytest==8.3.3
+
