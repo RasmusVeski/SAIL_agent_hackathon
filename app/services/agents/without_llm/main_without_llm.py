@@ -45,7 +45,7 @@ from a2a.utils import new_agent_text_message
 
 # --- Utility Imports ---
 # Add the 'services' directory to the Python path to allow imports like 'utils.model'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from utils.model import FoodClassifier
 from utils.data_loader import create_dataloader
@@ -147,16 +147,6 @@ async def thread_safe_merge_and_evaluate(state: AgentState, payload_1: dict, pay
     )
 
     # 2. Evaluate (also in a thread)
-    val_loss, val_acc, correct, total = await asyncio.to_thread(
-        evaluate,
-        model_to_eval, 
-        state.val_loader, 
-        state.device, 
-        state.criterion
-    )
-    logging.info(f"Round {new_round_num} ({role}) Merged Accuracy: {val_acc:.2f}% ({correct}/{total})")
-        
-    # 5. Evaluate -> OFFLOAD TO THREAD
     val_loss, val_acc, correct, total = await asyncio.to_thread(
         evaluate,
         model_to_eval, 
