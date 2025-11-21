@@ -3,6 +3,7 @@ import threading
 import uvicorn
 import os
 import sys
+import torch
 import subprocess
 from dotenv import load_dotenv
 
@@ -13,9 +14,9 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 # --- Local Imports ---
-from .state import state_singleton
-from .responder import FederatedAgentExecutor
-from .initiator import run_initiator_in_thread
+from services.agents.without_llm.state import state_singleton
+from services.agents.without_llm.responder import FederatedAgentExecutor
+from services.agents.without_llm.initiator import run_initiator_in_thread
 
 # --- Utils ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))

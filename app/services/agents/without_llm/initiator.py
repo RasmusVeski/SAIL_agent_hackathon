@@ -9,7 +9,7 @@ import os
 from a2a.client import A2ACardResolver, ClientFactory, ClientConfig, A2AClient
 
 # Local Imports
-from .state import AgentState, NUM_ROUNDS, thread_safe_merge_and_evaluate
+from services.agents.without_llm.state import AgentState, NUM_ROUNDS, thread_safe_merge_and_evaluate
 
 # Utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))

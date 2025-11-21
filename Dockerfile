@@ -5,6 +5,8 @@ FROM python:3.12-slim
 # 2. Set Environment Variables
 # Tells Python to print logs immediately
 ENV PYTHONUNBUFFERED=1
+# Set pythonpath to root
+ENV PYTHONPATH="/app"
 
 # 3. Set the working directory inside the container
 WORKDIR /app

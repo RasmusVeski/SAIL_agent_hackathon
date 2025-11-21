@@ -11,7 +11,7 @@ from a2a.types import Message, Part, DataPart
 from a2a.utils import new_agent_text_message
 
 # Local Imports
-from .state import AgentState, thread_safe_merge_and_evaluate
+from services.agents.without_llm.state import AgentState, thread_safe_merge_and_evaluate
 
 # Utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
