@@ -86,7 +86,9 @@ async def select_partner_agent():
         return f"Successfully connected to partner: {card.name} at {target_url}. Previous incoming weights cleared."
         
     except Exception as e:
-        return f"Failed to connect to {target_url}: {e}"
+        msg = f"Failed to connect to {target_url}: {e}"
+        logging.warning(f"INITIATOR: [Result] {msg}")
+        return msg
 
 @tool
 def train_local_model():
@@ -124,7 +126,9 @@ def train_local_model():
     _update_working_copy(new_weights)
     
     loss = history[-1]['train_loss'] if history else "N/A"
-    return f"Training complete. Final Loss: {loss:.4f}. Local draft updated."
+    msg = f"Training complete. Final Loss: {loss:.4f}. Local draft updated."
+    logging.info(f"INITIATOR: [Result] {msg}")
+    return msg
 
 @tool
 async def exchange_weights_with_partner(message_to_partner: str = "Starting exchange"):
@@ -171,7 +175,9 @@ async def exchange_weights_with_partner(message_to_partner: str = "Starting exch
         # 4. Stash result
         state_singleton.initiator_incoming_payload = responder_payload
         
-        return f"Exchange successful! Partner ({response_data.agent_id}) sent new weights. Message: '{response_data.message}'"
+        msg = f"Exchange successful! Partner ({response_data.agent_id}) sent new weights."
+        logging.info(f"INITIATOR: [Result] {msg}")
+        return msg
         
     except Exception as e:
         logging.error(f"Tool Exchange failed: {e}")
@@ -228,7 +234,9 @@ def merge_with_incoming(merge_alpha: float = 0.5):
     
     state_singleton.log_history(history_entry)
     
-    return f"Merge complete. Alpha: {merge_alpha}. Resulting Accuracy: {val_acc:.2f}%. History updated."
+    msg = f"Merge complete. Alpha: {merge_alpha}. Resulting Accuracy: {val_acc:.2f}%. History updated."
+    logging.info(f"INITIATOR: [Result] {msg}")
+    return msg
 
 
 @tool
@@ -276,7 +284,9 @@ def commit_to_global_model(alpha: float = 0.2):
     state_singleton.initiator_working_weights = None
     state_singleton.initiator_incoming_payload = None
     
-    return f"Success! Global Model updated to Round {new_round}. Final Acc: {val_acc:.2f}%"
+    msg = f"Success! Global Model updated to Round {new_round}. Final Acc: {val_acc:.2f}%"
+    logging.info(f"INITIATOR: [Result] {msg}")
+    return msg
 
 @tool
 def evaluate_model():
@@ -312,7 +322,9 @@ def evaluate_model():
         state_singleton.device,
         state_singleton.criterion
     )
-    return f"[{target_name}] Validation Results - Accuracy: {val_acc:.2f}%"
+    msg = f"[{target_name}] Validation Results - Accuracy: {val_acc:.2f}%"
+    logging.info(f"INITIATOR: [Result] {msg}")
+    return msg
 
 @tool
 def update_training_parameters(learning_rate: float = None, epochs: int = None, mu: float = None):

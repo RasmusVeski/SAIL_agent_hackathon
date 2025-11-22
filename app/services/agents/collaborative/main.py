@@ -130,7 +130,7 @@ if __name__ == '__main__':
     )
 
     request_handler = DefaultRequestHandler(
-        agent_executor=FederatedAgentExecutor(state_singleton),
+        agent_executor=CollaborativeResponderExecutor(state_singleton),
         task_store=InMemoryTaskStore(),
     )
 

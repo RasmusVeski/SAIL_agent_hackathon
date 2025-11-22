@@ -91,7 +91,9 @@ def train_local_model():
     _update_working_copy(new_weights)
     
     loss = history[-1]['train_loss'] if history else "N/A"
-    return f"Training complete. Final Loss: {loss:.4f}. Local draft updated."
+    msg = f"Training complete. Final Loss: {loss:.4f}. Local draft updated."
+    logging.info(f"RESPONDER: [Result] {msg}")
+    return msg
 
 
 @tool
@@ -117,7 +119,35 @@ def merge_with_partner(partner_id: str, merge_alpha: float = 0.5):
     # 3. Update Workspace
     _update_working_copy(merged_weights)
     
-    return "Merge complete. Local draft now contains combined weights. Ready to evaluate or commit."
+    # 4. Evaluate Immediately
+    # We load the new merged weights into a temp model to test accuracy
+    with state_singleton.model_lock:
+        temp_model = copy.deepcopy(state_singleton.global_model)
+        
+    curr_state = temp_model.state_dict()
+    curr_state.update(merged_weights)
+    temp_model.load_state_dict(curr_state)
+    
+    val_loss, val_acc, correct, total = evaluate(
+        temp_model,
+        state_singleton.val_loader,
+        state_singleton.device,
+        state_singleton.criterion
+    )
+    
+    # 5. Log History
+    history_entry = {
+        "round": state_singleton.round_num,
+        "role": "RESPONDER",
+        "partner": partner_id,
+        "action": f"Merged (alpha={merge_alpha})",
+        "result": f"Acc: {val_acc:.2f}%"
+    }
+    state_singleton.log_history(history_entry)
+
+    msg = f"Merge complete. Alpha: {merge_alpha}. Resulting Accuracy: {val_acc:.2f}%. History updated."
+    logging.info(f"RESPONDER: [Result] {msg}")
+    return msg
 
 @tool
 def evaluate_model():
@@ -157,7 +187,9 @@ def evaluate_model():
         state_singleton.criterion
     )
     
-    return f"[{target_name}] Validation Results - Accuracy: {val_acc:.2f}% ({correct}/{total})"
+    msg = f"[{target_name}] Validation Results - Accuracy: {val_acc:.2f}% ({correct}/{total})"
+    logging.info(f"RESPONDER: [Result] {msg}")
+    return msg
 
 
 @tool
@@ -201,7 +233,9 @@ def commit_to_global_model(partner_id: str):
     # 4. Clear Workspace
     state_singleton.responder_working_weights = None
     
-    return f"Success! Global Model updated to Round {new_round}. Final Acc: {val_acc:.2f}%"
+    msg = f"Success! Global Model updated to Round {new_round}. Final Acc: {val_acc:.2f}%"
+    logging.info(f"RESPONDER: [Result] {msg}")
+    return msg
 
 
 @tool
