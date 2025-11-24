@@ -5,6 +5,7 @@ from torch.optim import lr_scheduler
 from tqdm.auto import tqdm
 import logging
 
+NUM_CLASSES = 40 #For Food dataset
 
 def evaluate(model, val_loader, device, criterion, logger=None):
     """
@@ -19,6 +20,9 @@ def evaluate(model, val_loader, device, criterion, logger=None):
     total_samples = 0
     correct = 0
     valid_batches = 0
+
+    class_correct = list(0. for i in range(NUM_CLASSES))
+    class_total = list(0. for i in range(NUM_CLASSES))
     
     with torch.no_grad():
         for data, labels in val_loader:
@@ -32,18 +36,48 @@ def evaluate(model, val_loader, device, criterion, logger=None):
             total_loss += loss.item()
             valid_batches += 1
 
-            predicted = outputs.argmax(dim=1)
+            _, predicted = torch.max(outputs, 1)
             total_samples += labels.size(0)
             correct += (predicted == labels).sum().item()
+
+            # Per-class calculation
+            c = (predicted == labels).squeeze()
+            label_cpu = labels.cpu()
+            c_cpu = c.cpu()
+
+            for i in range(labels.size(0)):
+                label = label_cpu[i].item()
+                if label < NUM_CLASSES: # Safety check
+                    class_correct[label] += c_cpu[i].item()
+                    class_total[label] += 1
 
     if valid_batches == 0 or total_samples == 0:
         log.warning("Validation had zero valid batches.")
         return 0.0, 0.0, 0, 0
 
     avg_loss = total_loss / valid_batches
-    accuracy = 100 * correct / total_samples
+    overall_accuracy = 100 * correct / total_samples
 
-    return avg_loss, accuracy, correct, total_samples
+    # --- NEW: Log Per-Class Stats ---
+    # Calculate accuracy for each class that actually appeared in the validation set
+    accuracies = []
+    classes_with_data = 0
+    
+    # log.info("--- Per-Class Performance ---") # Optional: Uncomment for verbose logs
+    for i in range(NUM_CLASSES):
+        if class_total[i] > 0:
+            acc = 100 * class_correct[i] / class_total[i]
+            accuracies.append(acc)
+            classes_with_data += 1
+            # log.info(f"Class {i}: {acc:.1f}% ({int(class_correct[i])}/{int(class_total[i])})")
+        else:
+            accuracies.append(0.0)
+    macro_avg_acc = np.mean(accuracies)
+    # Count how many classes have > 0% accuracy (Knowledge Width)
+    classes_learned = sum(1 for acc in accuracies if acc > 0.0)
+    log.info(f"[Eval Details] Macro-Avg Acc: {macro_avg_acc:.2f}% | Classes Learned: {classes_learned}/{NUM_CLASSES}")
+
+    return avg_loss, overall_accuracy, correct, total_samples
 
 def train(model, train_loader, val_loader, epochs, learning_rate, device, 
           val_frequency=1, weight_decay=0.0, lr_scheduler_step_size=7,
