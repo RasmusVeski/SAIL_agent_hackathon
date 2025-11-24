@@ -8,67 +8,79 @@ load_dotenv()
 def analyze_local_data():
     # 1. Construct Path
     base_dir = os.getenv("BASE_DATA_DIR", "./app/sharded_data")
-    data_dir_name = os.getenv("DATA_DIR_NAME", "client_0") # Default to client_0 if missing
+    data_dir_name = os.getenv("DATA_DIR_NAME", "client_0")  # Default to client_0
     target_path = os.path.join(base_dir, data_dir_name)
 
     print(f"🔍 INSPECTING: {target_path}")
 
     # 2. Check if Path Exists
     if not os.path.exists(target_path):
-        print(f"❌ ERROR: Directory does not exist.")
+        print("❌ ERROR: Directory does not exist.")
         return
 
-    # 3. Check if Directory is Empty
     contents = os.listdir(target_path)
     if not contents:
-        print(f"⚠️  WARNING: Directory is EMPTY (0 files/folders).")
+        print("⚠️  WARNING: Directory is EMPTY (0 files/folders).")
         return
 
-    # 4. Filter for Class Directories
-    # We assume folders = class labels
-    class_folders = [d for d in contents if os.path.isdir(os.path.join(target_path, d))]
-    
+    # 3. Detect class folders
+    class_folders = [
+        d for d in contents
+        if os.path.isdir(os.path.join(target_path, d))
+    ]
+
     if not class_folders:
-        print(f"⚠️  WARNING: Directory contains files but NO class subdirectories.")
+        print("⚠️  WARNING: Directory contains files but NO class folders.")
         print(f"   Contents: {contents[:5]}...")
         return
 
-    # 5. Analyze Classes
-    # Try to sort numerically for cleaner output
+    # Try to sort numerically when possible
     try:
         class_folders.sort(key=int)
     except ValueError:
         class_folders.sort()
 
-    num_classes = len(class_folders)
-    total_global_classes = 40 # We know this from context
-    coverage = (num_classes / total_global_classes) * 100
+    total_global_classes = 40
+    total_local_folders = len(class_folders)
 
-    print("-" * 40)
-    print(f"✅ ANALYSIS COMPLETE")
-    print(f"📊 Local Classes Held: {num_classes} / {total_global_classes} ({coverage:.1f}%)")
-    print("-" * 40)
-    print(f"📂 Labels: {class_folders}")
-    
-    # 6. Check for Empty Class Folders (Corrupt Data)
+    print("-" * 50)
+    print(f"📁 CLASS FOLDERS FOUND: {total_local_folders}")
+    print("-" * 50)
+    print("📁 CLASS DISTRIBUTION:")
+    print()
+
     empty_classes = []
+    nonempty_classes = []
     total_images = 0
-    
+
+    # 4. Print per-class counts and track nonempty classes
     for cls in class_folders:
         cls_path = os.path.join(target_path, cls)
-        images = os.listdir(cls_path)
+        images = [
+            f for f in os.listdir(cls_path)
+            if os.path.isfile(os.path.join(cls_path, f))
+        ]
         count = len(images)
         total_images += count
-        if count == 0:
+
+        if count > 0:
+            nonempty_classes.append(cls)
+            status = f"{count} images"
+        else:
             empty_classes.append(cls)
-            
-    print("-" * 40)
-    print(f"🖼️  Total Images: {total_images}")
-    
+            status = "EMPTY"
+
+        print(f"  • Class {cls:>2}: {status}")
+
+    print("-" * 50)
+    print(f"🖼️ TOTAL IMAGES: {total_images}")
+    print(f"📊 CLASSES WITH DATA: {len(nonempty_classes)} / {total_global_classes}")
+    print()
+
     if empty_classes:
-        print(f"⚠️  WARNING: These class folders are empty: {empty_classes}")
+        print(f"⚠️ EMPTY CLASS FOLDERS: {empty_classes}")
     else:
-        print(f"✨ All class folders contain data.")
+        print("✨ All class folders contain data.")
 
 if __name__ == "__main__":
     analyze_local_data()
