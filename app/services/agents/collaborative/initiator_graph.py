@@ -82,6 +82,9 @@ async def select_partner_agent():
         logger.info(f"Resolving card for {target_url}...")
         card = await resolver.get_agent_card()
         config = ClientConfig(httpx_client=state_singleton.shared_httpx_client)
+
+        current_timeout = config.httpx_client.timeout.read
+        logger.info(f"DEBUG: A2A Client configured with timeout: {current_timeout}s")
         client = await ClientFactory.connect(agent=card, client_config=config)
         
         state_singleton.active_client = client
