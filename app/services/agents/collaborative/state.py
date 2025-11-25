@@ -21,42 +21,42 @@ AGENT_HPS = {
     'weight_decay': 1e-3, 
     'mu': 0.5,
     'val_frequency': 1,       
-    'lr_scheduler_step_size': 999 
+    'lr_scheduler_step_size': 999 # Hack for keeping same learning rate since train for few epochs
 }
 
 class AgentState:
     def __init__(self):
         self.agent_id = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.global_model = None
+        self.global_model = None # protected by `model_lock`
         self.train_loader = None
         self.val_loader = None
-        self.criterion = None
-        self.round_num = 0
-        self.agent_hps = AGENT_HPS
+        self.criterion = None # CrossEntropyLoss
+        self.round_num = 0 # Counter for the current global training round/update.
+        self.agent_hps = AGENT_HPS # The current set of hyperparameters used for the local training loop.
 
         # --- Network State ---
-        self.available_partners = [] # List of URLs strings
-        self.shared_httpx_client = None # Assigned by initiator loop
+        self.available_partners = [] # List of partner base URLs (strings) that this agent can initiate contact with.
+        self.shared_httpx_client = None # The shared HTTP client object used by both the Initiator and Responder to make requests.
 
         # --- Shared Episodic Memory ---
         # Stores dicts: {'round': 1, 'role': 'RESPONDER', 'partner': 'Agent_B', 'result': 'Acc: 10%', 'action': 'Merged'}
-        self.history = []
+        self.history = [] # A chronological list of past actions, partners, and results. Used to inform the LLM's next strategic decision.
 
         # --- Thread-Specific Scratchpads ---
-        # Responder Scratchpad
-        self.responder_working_weights = None
-        self.responder_incoming_payload = None # Responder's incoming data
+        # These are temporary holders for model weights/payloads during a single P2P exchange.
+        self.responder_working_weights = None # The model weights *after* the Responder trains locally (the draft update).
+        self.responder_incoming_payload = None # The model weights received *from* an Initiator partner.
 
         # Initiator Scratchpad
-        self.initiator_working_weights = None
-        self.initiator_incoming_payload = None
+        self.initiator_working_weights = None # The model weights *after* the Initiator trains locally (the draft update).
+        self.initiator_incoming_payload = None # The model weights received *from* the Responder partner.
         self.active_client = None # The A2AClient object for the Initiator thread to use
-        self.current_partner_id = None
+        self.current_partner_id = None # The ID of the partner being communicated with during the current active session.
 
         # --- Lock ---
-        self.model_lock = threading.Lock()
-        self.responder_lock = asyncio.Lock()
+        self.model_lock = threading.Lock() # standard thread lock to protect the self.global_model and self.round_num.
+        self.responder_lock = asyncio.Lock() # An async lock to prevent multiple incoming responder requests from being processed simultaneously.
 
 
     def log_history(self, entry: dict):
@@ -67,7 +67,7 @@ class AgentState:
             if len(self.history) > 50:
                 self.history.pop(0)
 
-    def get_formatted_history(self, limit=5) -> str:
+    def get_formatted_history(self, limit=10) -> str:
         """Returns a formatted string of recent history for the LLM."""
         # We don't need a lock just to read/copy the list for a prompt
         recent = self.history[-limit:]
