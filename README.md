@@ -1,1 +1,1 @@
-# SAIL_agent_hackathon
+# SAIL_agent_workshop
