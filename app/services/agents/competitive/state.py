@@ -18,7 +18,7 @@ NUM_ROUNDS = 20
 AGENT_HPS = {
     'epochs': 1, 
     'learning_rate': 1e-4, 
-    'weight_decay': 1e-3, 
+    'weight_decay': 1e-3, # L2, penalty to big weights
     'mu': 0.5,
     'val_frequency': 1,       
     'lr_scheduler_step_size': 999 # Hack for keeping same learning rate since train for few epochs
@@ -58,6 +58,9 @@ class AgentState:
         self.model_lock = threading.Lock() # standard thread lock to protect the self.global_model and self.round_num.
         self.responder_lock = asyncio.Lock() # An async lock to prevent multiple incoming responder requests from being processed simultaneously.
 
+        # --- Competetive ---
+        self.malicious_nodes = set() # Agent IDs of nodes you do not trust
+
 
     def log_history(self, entry: dict):
         """Thread-safe append to history."""
@@ -86,7 +89,7 @@ class AgentState:
 # The Global Singleton
 state_singleton = AgentState()
 
-def blocking_commit(state: AgentState, draft_payload: dict, alpha: float = 0.2):
+def _blocking_commit_logic(state: AgentState, draft_payload: dict, alpha: float = 0.2):
     """
     Commits the 'Draft' (working weights) to the Global Model.
     

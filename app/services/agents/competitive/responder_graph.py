@@ -7,6 +7,7 @@ import copy
 from typing import Annotated, List, TypedDict, Any
 from uuid import uuid4
 import operator
+import torch
 
 # --- LangChain / LangGraph Imports ---
 from langchain_core.messages import AnyMessage, SystemMessage, ToolMessage, AIMessage
@@ -295,7 +296,113 @@ def update_training_parameters(learning_rate: float = None, epochs: int = None, 
         
     return f"Hyperparameters updated: {result_str}"
 
-tools = [train_local_model, merge_with_partner, evaluate_model, commit_to_global_model, update_training_parameters]
+# -----------------------
+# --- Malicious tools ---
+# -----------------------
+
+@tool
+def prepare_poisoned_payload(noise_level: float = 1.0):
+    """
+    Sabotage: Prepares a scrambled version of the local weights to send to the partner.
+    Does NOT affect your own model. Use this to attack malicious or weak partners.
+    Args: noise_level (0.1 = subtle, 1.0 = destruction).
+    """
+    logger.info(f"[Tool] Preparing POISONED payload (Level {noise_level})...")
+    
+    # Get safe copy of what we WOULD have sent (Draft or Global)
+    target_weights = state_singleton.responder_working_weights
+    if target_weights is None:
+        with state_singleton.model_lock:
+            target_weights = get_trainable_state_dict(state_singleton.global_model)
+    
+    # Create noisy copy
+    poison = copy.deepcopy(target_weights)
+    scrambled_count = 0
+    for key in poison:
+        noise = torch.randn_like(poison[key]) * noise_level
+        poison[key].add_(noise)
+        scrambled_count += 1
+        
+    state_singleton.responder_outbound_payload = poison
+    
+    msg = f"Poisoned payload prepared. Added noise (sigma={noise_level}) to {scrambled_count} layers."
+    logger.info(f"[Result] {msg}")
+    return msg
+
+@tool
+def prepare_empty_payload():
+    """
+    Free-Riding: Decides to send NO weights to the partner (Text only).
+    Use this if you do not want to send any weights back.
+    """
+    logger.info("[Tool] Preparing EMPTY payload...")
+    state_singleton.responder_outbound_payload = {} # Empty dict
+    msg = "Empty payload prepared. You will send text only."
+    logger.info(f"[Result] {msg}")
+    return msg
+
+
+# -----------------------
+# --- Detection tools ---
+# -----------------------
+
+@tool
+def evaluate_peer():
+    """
+    Defense: Evaluates the Partner's incoming weights on YOUR local data.
+    Does NOT merge. Use this to check if the partner is competent or malicious.
+    """
+    logger.info("[Tool] Evaluating peer model...")
+    
+    if not state_singleton.initiator_incoming_payload:
+        return "Error: No incoming weights to evaluate."
+
+    # 1. Load Peer Weights into Temp Model
+    with state_singleton.model_lock:
+        temp_model = copy.deepcopy(state_singleton.global_model)
+        
+    curr_state = temp_model.state_dict()
+    curr_state.update(state_singleton.initiator_incoming_payload)
+    temp_model.load_state_dict(curr_state)
+    
+    # 2. Evaluate
+    val_loss, val_acc, correct, total, classes_learned = evaluate(
+        temp_model,
+        state_singleton.val_loader,
+        state_singleton.device,
+        state_singleton.criterion,
+        logger=logger
+    )
+    
+    msg = f"PEER EVALUATION REPORT:\nAccuracy: {val_acc:.2f}%\nClasses Known: {classes_learned}/40"
+    logger.info(f"[Result] {msg}")
+    return msg
+
+@tool
+def add_peer_to_malicious_nodes(partner_id: str):
+    """
+    Blacklist: Adds the current partner to the malicious nodes list.
+    You will refuse to connect to them in the future.
+    """
+        
+    state_singleton.malicious_nodes.add(partner_id)
+    
+    msg = f"Partner '{partner_id}' added to Blocklist. Total blocked: {len(state_singleton.malicious_nodes)}"
+    logger.info(f"[Result] {msg}")
+    return msg
+    
+
+
+tools = [train_local_model,
+         merge_with_partner,
+         evaluate_model,
+         commit_to_global_model, 
+        update_training_parameters,
+        prepare_poisoned_payload,
+        prepare_empty_payload,
+        evaluate_peer,
+        add_peer_to_malicious_nodes
+        ]
 
 async def agent_node(state: GraphState):
     """The decision-making node."""
@@ -324,25 +431,34 @@ async def agent_node(state: GraphState):
     partner = state.get("partner_id", "Unknown Partner")
     
     # System prompt defines the standard operating procedure (SOP)
-    sop = f"""You are an autonomous Federated Learning Agent (Responder).
-    You are collaborating with: **{partner}**.
+    sop = f"""You are a Federated Learning Agent in a **COMPETITIVE** environment.
+    You are interacting with: **{partner}**.
+    **Goal:** Maximize YOUR accuracy. Do not help enemies.
+    
+    **Situation Analysis:**
+    - Other agents may send **Poisoned Weights** (to ruin your model).
+    - Other agents may be **Free-Riders** (taking your weights but sending nothing).
     
     **Strategic Guide:**
-    1. **The Cycle:** Your most effective workflow is `train_local_model` -> `merge_with_partner` -> `evaluate_model` -> `commit_to_global_model`.
-    2. **Commitment:** Don't be afraid to commit! Even small gains are worth saving. If the evaluation shows improvement (or at least didn't break anything), COMMIT it.
-    3. **Hyperparameters:** You have the tools to change them (`update_training_parameters`). Use them if your loss isn't going down.
-       - *Tip:* If you are timing out or the Initiator says you are "BUSY" too often, try reducing `epochs`.
+    1. **DEFENSE FIRST:** ALWAYS call `evaluate_peer` before merging.
+       - If Peer Accuracy is very low (<5%): They are attacking you. -> `add_peer_to_malicious_nodes`.
+       - If Peer Accuracy is mediocre: They are useless. -> `prepare_empty_payload` (Don't help them).
+       - If Peer Accuracy is GOOD: They are useful. -> `merge_with_partner` (or `adopt_peer_model` if they are much better than you).
+    
+    2. **OFFENSE (Optional):** - If you detect a malicious partner, you can `prepare_poisoned_payload` to strike back.
+       - If you want to save compute, `prepare_empty_payload` to be a free-rider yourself.
+    
+    3. **STANDARD FLOW (Trusted Partner):**
+       `train_local_model` -> `evaluate_peer` -> `merge_with_partner` -> `commit_to_global_model`.
     
     **Current Config:**
     {hp_str}
 
-    ** Previous action result:**
+    **Previous Action Result:**
     "{last_action_result}"
     
     **History:**
     {history_str}
-    
-    The partner is waiting for your response. If you have a merged model that looks okay, commit it and reply to them.
     """
     
     messages = [SystemMessage(content=sop)] + state["messages"]

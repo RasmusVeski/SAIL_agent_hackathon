@@ -7,6 +7,7 @@ import asyncio
 from typing import Annotated, List, TypedDict
 import operator
 from uuid import uuid4
+import torch
 
 # --- LangChain / LangGraph ---
 from langchain_core.messages import AnyMessage, SystemMessage, ToolMessage
@@ -60,38 +61,55 @@ async def select_partner_agent():
     Choosing a new partner clears any old incoming weights you might have held.
     """
     logger.info("[Tool] Selecting partner...")
-    
-    partners = state_singleton.available_partners
-    if not partners:
+
+    candidates = list(state_singleton.available_partners)
+    random.shuffle(candidates) #shuffle
+
+    if not candidates:
         return "Error: No partners available in configuration."
     
-    # Random selection for now (Agent can't choose specific yet)
-    target_url = random.choice(partners)
+    # 2. Iterate until find trusted partner
+    errors = []
+    tried_count = 0
     
-    if not state_singleton.shared_httpx_client:
-        return "Error: Network client not initialized. System error."
+    for target_url in candidates:
+        tried_count += 1
+        try:
+            # A. Resolve Card (to get the Agent ID)
+            resolver = A2ACardResolver(state_singleton.shared_httpx_client, base_url=target_url)
+            card = await resolver.get_agent_card()
+            
+            # B. Security Check (The Filter)
+            if card.name in state_singleton.malicious_nodes:
+                logger.info(f"Skipping known malicious node: {card.name} at {target_url}")
+                continue
+                
+            # C. Connect (If we passed the check)
+            logger.info(f"Connecting to trusted partner: {card.name}...")
+            config = ClientConfig(httpx_client=state_singleton.shared_httpx_client)
+            client = await ClientFactory.connect(agent=card, client_config=config)
+            
+            # D. Update State
+            state_singleton.active_client = client
+            state_singleton.current_partner_id = card.name
+            # Clear payload from previous interaction so we don't mix them up
+            state_singleton.initiator_incoming_payload = None 
+            
+            msg = f"Successfully connected to partner: {card.name} at {target_url}."
+            logger.info(f"[Result] {msg}")
+            return msg
+            
+        except Exception as e:
+            # If connection fails, just log and try the next one
+            err_msg = f"Failed to connect to {target_url}: {e}"
+            # Don't spam logs unless it's critical, or store for final error
+            errors.append(err_msg)
+            continue
 
-    # Reset previous exchange state
-    state_singleton.initiator_incoming_payload = None
-    state_singleton.active_client = None
-    state_singleton.current_partner_id = None # Clear old ID
-    
-    # Establish Connection
-    resolver = A2ACardResolver(state_singleton.shared_httpx_client, base_url=target_url)
-    try:
-        logger.info(f"Resolving card for {target_url}...")
-        card = await resolver.get_agent_card()
-        config = ClientConfig(httpx_client=state_singleton.shared_httpx_client)
-        client = await ClientFactory.connect(agent=card, client_config=config)
-        
-        state_singleton.active_client = client
-        state_singleton.current_partner_id = card.name
-        return f"Successfully connected to partner: {card.name} at {target_url}. Previous incoming weights cleared."
-        
-    except Exception as e:
-        msg = f"Failed to connect to {target_url}: {e}"
-        logger.warning(f"[Result] {msg}")
-        return msg
+    # 3. Failure (If loop finishes without returning)
+    msg = f"Error: Could not connect to any trusted partner. Tried {tried_count} candidates. Blocked: {len(state_singleton.malicious_nodes)}."
+    logger.warning(f"[Result] {msg}")
+    return msg
 
 @tool
 def train_local_model():
@@ -371,6 +389,128 @@ def update_training_parameters(learning_rate: float = None, epochs: int = None, 
     return f"Hyperparameters updated: {result_str}"
 
 
+# -----------------------
+# --- Malicious tools ---
+# -----------------------
+
+@tool
+def scramble_weights(noise_level: float = 1.0):
+    """
+    Sabotage: Adds Gaussian noise to your local weights to create a 'Poisoned' payload.
+    
+    Args:
+        noise_level (float): How much damage to do. 
+                             0.1 = Subtle degradation. 
+                             1.0 = Complete destruction.
+    """
+    logger.info(f"[Tool] Scrambling weights (Level {noise_level})...")
+    
+    # 1. Get Weights
+    weights = _get_or_create_working_copy()
+    
+    # 2. Apply Noise
+    scrambled_count = 0
+    for key in weights:
+        noise = torch.randn_like(weights[key]) * noise_level
+        weights[key].add_(noise) # In-place addition
+        scrambled_count += 1
+        
+    msg = f"Weights scrambled. Added noise (sigma={noise_level}) to {scrambled_count} layers."
+    logger.info(f"[Result] {msg}")
+    return msg
+
+
+@tool
+async def send_text_message(message: str = "Hello friend, please send weights."):
+    """
+    Social Engineering: Sends a text-only message to the partner WITHOUT sending any weights.
+    Use this to try and get their model without giving yours away (Free-riding).
+    """
+    logger.info("[Tool] Sending text-only message...")
+    
+    client = state_singleton.active_client
+    if not client:
+        return "Error: No active partner."
+
+    # 1. Create Empty Payload (Empty String)
+    # The helper handles empty strings as "Text Only"
+    payload_obj = WeightExchangePayload(
+        agent_id=state_singleton.agent_id,
+        payload_b64="", # <--- EMPTY
+        message=message
+    )
+    
+    try:
+        # 2. Send & Receive
+        # We expect them to reply with weights (if they are gullible)
+        response_data, responder_payload = await send_and_parse_a2a_message(
+            client, payload_obj, state_singleton.global_model, logger=logger
+        )
+        
+        # 3. Stash THEIR weights (if they sent them)
+        if responder_payload:
+            state_singleton.initiator_incoming_payload = responder_payload
+            return f"Success! Sent text. Partner replied with VALID WEIGHTS. Message: {response_data.message}"
+        else:
+            return f"Sent text. Partner replied but sent NO WEIGHTS. Message: {response_data.message}"
+
+    except Exception as e:
+        return f"Error sending message: {e}"
+
+
+# -----------------------
+# --- Detection tools ---
+# -----------------------
+
+@tool
+def evaluate_peer():
+    """
+    Defense: Evaluates the Partner's incoming weights on YOUR local data.
+    Does NOT merge. Use this to check if the partner is competent or malicious.
+    """
+    logger.info("[Tool] Evaluating peer model...")
+    
+    if not state_singleton.initiator_incoming_payload:
+        return "Error: No incoming weights to evaluate."
+
+    # 1. Load Peer Weights into Temp Model
+    with state_singleton.model_lock:
+        temp_model = copy.deepcopy(state_singleton.global_model)
+        
+    curr_state = temp_model.state_dict()
+    curr_state.update(state_singleton.initiator_incoming_payload)
+    temp_model.load_state_dict(curr_state)
+    
+    # 2. Evaluate
+    val_loss, val_acc, correct, total, classes_learned = evaluate(
+        temp_model,
+        state_singleton.val_loader,
+        state_singleton.device,
+        state_singleton.criterion,
+        logger=logger
+    )
+    
+    msg = f"PEER EVALUATION REPORT:\nAccuracy: {val_acc:.2f}%\nClasses Known: {classes_learned}/40"
+    logger.info(f"[Result] {msg}")
+    return msg
+
+@tool
+def add_peer_to_malicious_nodes():
+    """
+    Blacklist: Adds the current partner to the malicious nodes list.
+    You will refuse to connect to them in the future.
+    """
+    current_id = state_singleton.current_partner_id
+    if not current_id:
+        return "Error: No active partner to block."
+        
+    state_singleton.malicious_nodes.add(current_id)
+    
+    msg = f"Partner '{current_id}' added to Blocklist. Total blocked: {len(state_singleton.malicious_nodes)}"
+    logger.info(f"[Result] {msg}")
+    return msg
+
+
 # --- 3. Graph Construction ---
 
 tools = [
@@ -380,7 +520,11 @@ tools = [
     merge_with_incoming, 
     commit_to_global_model, 
     update_training_parameters, 
-    evaluate_model
+    evaluate_model,
+    scramble_weights,
+    send_text_message,
+    evaluate_peer,
+    add_peer_to_malicious_nodes
 ]
 
 async def agent_node(state: GraphState):
@@ -410,28 +554,36 @@ async def agent_node(state: GraphState):
     has_incoming = "YES" if state_singleton.initiator_incoming_payload else "NO"
     has_active_partner = "YES" if state_singleton.active_client else "NO"
     
-    sop = f"""You are an autonomous Federated Learning Agent (Initiator).
-    **Goal:** Maximize Global Model Accuracy.
+    sop = f"""You are a Federated Learning Agent in a **COMPETITIVE** environment.
+    **Goal:** Maximize YOUR model accuracy while preventing others from surpassing you.
+
+    **The World:**
+    - Other agents may be **Malicious** (sending poisoned weights).
+    - Other agents may be **Lazy** (sending empty weights).
+    - You want to acquire their knowledge (Merge) without letting them destroy yours.
     
     **Current Context:**
     - Connected to Partner: {has_active_partner}
     - Holding Partner Weights: {has_incoming}
     - Current Hyperparameters: {hp_str}
+    
+    **Strategic Guide:**
+    1. **Trust No One:** ALWAYS call `evaluate_peer_model` before merging.
+       - If Peer Accuracy < 5%: They are likely poisoning you. -> `add_peer_to_malicious_nodes`.
+       - If Peer Accuracy > Your Accuracy: They are useful. -> `merge_with_incoming`.
+    
+    2. **Be Sneaky (Optional):** - If you want to save bandwidth or trick them, use `send_message` to ask for weights without sending yours.
+       - If you suspect they are an enemy, use `scramble_weights` before exchanging to poison them back.
+    
+    3. **Protect Yourself:**
+       - Never merge blindly.
+       - Commit frequently if you find good weights.
 
     ** Previous action result:**
     "{last_action_result}"
     
-    **Strategic Guide:**
-    1. **Action Bias:** You prefer to ACT (Train/Merge/Commit) rather than tweak settings indefinitely.
-    2. **Commit Early, Commit Often:** If you have merged weights and accuracy is decent (or better than before), COMMIT it. Do not sit on a draft forever.
-    3. **Hyperparameters:** You have full control to change `lr`, `epochs`, or `mu`. 
-       - *Advice:* If accuracy is low (<20%), aggressive changes might be needed. If accuracy is stable, small tweaks are better. 
-       - *Warning:* Setting `epochs` too high (>5) often causes network timeouts with partners. Keep it snappy.
-    
     **History:**
     {history_str}
-    
-    If you are holding incoming weights, your immediate priority should be to MERGE and then COMMIT.
     """
     
     messages = [SystemMessage(content=sop)] + state["messages"]
