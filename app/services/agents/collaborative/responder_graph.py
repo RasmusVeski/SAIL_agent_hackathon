@@ -301,8 +301,11 @@ async def agent_node(state: GraphState):
     """The decision-making node."""
     llm = ChatOpenAI(
         model=os.getenv("OPENAI_MODEL_NAME", "openai/gpt-oss-120b"),
-        base_url=os.getenv("OPENAI_API_BASE", "https://inference.rcp.epfl.ch/v1"),
-        api_key=os.getenv("OPENAI_API_KEY")
+        base_url=os.getenv("OPENAI_API_BASE"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        temperature=0.4,
+        timeout=30.0, # Give up if the LLM doesn't reply in 30s
+        max_retries=4 # Retry four times before crashing
     )
     llm_with_tools = llm.bind_tools(tools)
 
@@ -343,7 +346,7 @@ async def agent_node(state: GraphState):
     """
     
     messages = [SystemMessage(content=sop)] + state["messages"]
-    response = await llm_with_tools.ainvoke(messages)
+    response = await llm_with_tools.ainvoke(messages, parallel_tool_calls=False)
     return {"messages": [response]}
 
 

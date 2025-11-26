@@ -88,8 +88,12 @@ class CollaborativeResponderExecutor(AgentExecutor):
                 logger.error(f"Graph execution failed: {e}. Proceeding with fallback.")
                 final_state = {}
 
+            def _get_safe_current_weights():
+                with self.state.model_lock:
+                    return get_trainable_state_dict(self.state.global_model)
+            # Always send global weights
 
-            weights_to_send = None
+            weights_to_send = await asyncio.to_thread(_get_safe_current_weights)
             response_msg = "Ready for next round!"
 
             if final_state and "messages" in final_state and final_state["messages"]:
@@ -97,21 +101,7 @@ class CollaborativeResponderExecutor(AgentExecutor):
                 if isinstance(last_msg, AIMessage) and last_msg.content:
                     response_msg = str(last_msg.content)
                     logger.info(f"Agent chose to say: '{response_msg}'")
-
-            # Check for draft weights (Training happened, but no commit)
-            if state_singleton.responder_working_weights is not None:
-                logger.info("Found draft (newest) weights from Agent.")
-                weights_to_send = state_singleton.responder_working_weights
-                state_singleton.responder_working_weights = None
-            else:
-                # Fallback: Send Current Global (Either Commit happened OR Nothing happened)
-                def _get_safe_current_weights():
-                    with self.state.model_lock:
-                        return get_trainable_state_dict(self.state.global_model)
                 
-                weights_to_send = await asyncio.to_thread(_get_safe_current_weights)
-                
-
             # Serialize and Send
             # We use asyncio.to_thread because serialization can be slow
             my_payload_b64 = await asyncio.to_thread(
