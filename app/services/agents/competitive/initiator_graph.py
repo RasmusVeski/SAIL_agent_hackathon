@@ -20,7 +20,7 @@ from langgraph.prebuilt import ToolNode
 from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
 
 # --- Local Imports ---
-from services.agents.collaborative.state import state_singleton, blocking_commit
+from services.agents.competitive.state import state_singleton, blocking_commit
 
 # --- Utils ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -294,7 +294,7 @@ def commit_to_global_model(alpha: float = 0.2):
     result_str = f"Acc: {val_acc:.2f}% | Classes Learned: {classes_learned}/40"
 
     # Save to disk
-    save_dir = os.path.join(os.getcwd(), "models/collaborative") 
+    save_dir = os.path.join(os.getcwd(), "models/competitive") 
     os.makedirs(save_dir, exist_ok=True)
     
     # Filename format: {round}_weight_{uid}.pt

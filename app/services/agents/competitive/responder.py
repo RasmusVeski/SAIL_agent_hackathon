@@ -11,8 +11,8 @@ from a2a.server.events import EventQueue
 from a2a.utils import new_agent_text_message
 
 # Local Imports
-from services.agents.collaborative.state import AgentState, state_singleton
-from services.agents.collaborative.responder_graph import responder_graph
+from services.agents.competitive.state import AgentState, state_singleton
+from services.agents.competitive.responder_graph import responder_graph
 
 # Utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -24,7 +24,7 @@ from utils.a2a_helpers import (
 )
 from utils.logger_colored import get_specialized_logger
 
-class CollaborativeResponderExecutor(AgentExecutor):
+class CompetitiveResponderExecutor(AgentExecutor):
     
     def __init__(self, state: AgentState):
         self.state = state

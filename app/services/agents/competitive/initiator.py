@@ -8,8 +8,8 @@ import os
 from langchain_core.messages import HumanMessage
 
 # Local Imports
-from services.agents.collaborative.state import AgentState, NUM_ROUNDS
-from services.agents.collaborative.initiator_graph import initiator_graph
+from services.agents.competitive.state import AgentState, NUM_ROUNDS
+from services.agents.competitive.initiator_graph import initiator_graph
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from utils.logger_colored import get_specialized_logger
 

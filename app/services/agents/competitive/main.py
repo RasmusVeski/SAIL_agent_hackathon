@@ -14,9 +14,9 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 # --- Local Imports ---
-from services.agents.collaborative.state import state_singleton
-from services.agents.collaborative.responder import CollaborativeResponderExecutor
-from services.agents.collaborative.initiator import run_initiator_in_thread
+from services.agents.competitive.state import state_singleton
+from services.agents.competitive.responder import CompetitiveResponderExecutor
+from services.agents.competitive.initiator import run_initiator_in_thread
 
 # --- Utils ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -124,7 +124,7 @@ if __name__ == '__main__':
     )
 
     request_handler = DefaultRequestHandler(
-        agent_executor=CollaborativeResponderExecutor(state_singleton),
+        agent_executor=CompetitiveResponderExecutor(state_singleton),
         task_store=InMemoryTaskStore(),
     )
 

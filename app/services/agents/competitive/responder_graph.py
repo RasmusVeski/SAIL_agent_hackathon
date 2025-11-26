@@ -18,7 +18,7 @@ from langgraph.prebuilt import ToolNode
 
 
 # --- Local Imports ---
-from services.agents.collaborative.state import state_singleton, blocking_commit
+from services.agents.competitive.state import state_singleton, blocking_commit
 # (We import the singleton because tools need access to the GLOBAL weights)
 
 # --- Utils ---
@@ -226,7 +226,7 @@ def commit_to_global_model(partner_id: str):
     )
 
     # Save model
-    save_dir = os.path.join(os.getcwd(), "models/collaborative")
+    save_dir = os.path.join(os.getcwd(), "models/competitive")
     os.makedirs(save_dir, exist_ok=True)
     
     state_singleton.global_model.dump_weights(
