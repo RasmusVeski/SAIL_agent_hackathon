@@ -134,12 +134,14 @@ This workshop is divided into two halves. First we will build agents that try to
 
 #### 1. Collaborative Agents (`app/services/agents/collaborative/`)
 * **`initiator_graph.py`**: Defines the **Initiator** workflow (Proactive). Edit this to change how the agent selects partners, decides to train, or interprets results.
+  * 
 * **`responder_graph.py`**: Defines the **Responder** workflow (Reactive). Edit this to change how the agent reacts to incoming requests.
+  * Returns whatever model is within state.global_model
 * **`state.py`**: Holds the global state (Model weights, History, Locks). Edit this to change default Hyperparameters (`AGENT_HPS`) or to add new assisting global parameters and logic.
 
 
 #### 2. Competitive Agents (`app/services/agents/competitive/`)
-* *(Future/TODO)*: Agents designed to compete, hide data, or potentially poison the model.
+Edit the exact same files in the different /competitive folder.
 
 ### The Infrastructure (Utils)
 These files handle the heavy lifting. You generally **do not** need to edit these unless you are changing the core learning algorithm.
