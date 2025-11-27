@@ -410,7 +410,7 @@ async def agent_node(state: GraphState):
         base_url=os.getenv("OPENAI_API_BASE"),
         api_key=os.getenv("OPENAI_API_KEY"),
         temperature=0.4,
-        timeout=30.0, # Give up if the LLM doesn't reply in 30s
+        timeout=60.0, # Give up if the LLM doesn't reply in 60s
         max_retries=4 # Retry four times before crashing
     )
     llm_with_tools = llm.bind_tools(tools)
