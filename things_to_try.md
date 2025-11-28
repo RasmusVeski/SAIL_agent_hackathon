@@ -52,6 +52,10 @@ The `history` list currently logs results. Make it richer so the LLM can learn f
 
 Be careful, the longer the history the worse the LLM gets.
 
+### 4. Discretize workflow using Langraph
+
+Make new nodes. For example, the first node can be always forced: get new weights from peers and store them. Only then ask the agent what it wants to do with them
+
 ## Prompt Engineering
 
 The "Brain" is only as good as its instructions.
