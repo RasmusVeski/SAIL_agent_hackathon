@@ -1,0 +1,63 @@
+#Build image
+docker build -t agent-image:latest .
+
+
+#Data check
+docker run -it --rm `
+    --name data_check `
+    -v ./app:/app `
+    -v ./app/sharded_data:/app/sharded_data `
+    --env-file ./.env `
+    agent-image:latest `
+    analyze_local_data.py
+
+
+# Local data training
+docker run -it --rm `
+    --name agent_benchmark `
+    --privileged `
+    -v ./app:/app `
+    -v ./app/sharded_data:/app/sharded_data `
+    -v ./logs:/app/logs `
+    --env-file ./.env `
+    agent-image:latest `
+    services/agents/benchmark_local.py
+
+
+# Without LLM
+docker run -it --rm `
+    --name static_agent `
+    --privileged `
+    -p 9000:9000 `
+    -v ./app:/app `
+    -v ./app/sharded_data:/app/sharded_data `
+    -v ./logs:/app/logs `
+    --env-file ./.env `
+    agent-image:latest `
+    services/agents/without_llm/main.py
+
+
+# Collaborative
+docker run -it --rm `
+    --name agent_collaborative `
+    --privileged `
+    -p 9000:9000 `
+    -v ./app:/app `
+    -v ./app/sharded_data:/app/sharded_data `
+    -v ./logs:/app/logs `
+    --env-file ./.env `
+    agent-image:latest `
+    services/agents/collaborative/main.py
+
+
+# Competitive
+docker run -it --rm `
+    --name agent_competitive `
+    --privileged `
+    -p 9000:9000 `
+    -v ./app:/app `
+    -v ./app/sharded_data:/app/sharded_data `
+    -v ./logs:/app/logs `
+    --env-file ./.env `
+    agent-image:latest `
+    services/agents/competitive/main.py
