@@ -31,7 +31,7 @@ PUBLIC_URL=http://xxx.yy.zz.x:9000 #your machine address and port
 # List of partner machine addresses running simulation with
 PARTNER_URLS=http://yyy.xx.zzz.x:9000,http://zzz.xx.yy.x:9000 
 # Dataset dependent
-BASE_DATA_DIR=/app/sharded_data
+BASE_DATA_DIR=./sharded_data
 DATA_DIR_NAME=client_0 #your shard name
 VAL_DIR_NAME=test1
 OPENAI_API_BASE=https://inference.rcp.epfl.ch/v1
