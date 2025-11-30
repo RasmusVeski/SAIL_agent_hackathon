@@ -10,7 +10,7 @@ This repository allows simulation of a **Decentralized Federated Learning** netw
 ### 1. Prerequisites
 * **Docker:** https://docs.docker.com/engine/install/
   * Works also uncontainerized but good practice to put agents in containers
-* **OpenAI API Key:** You need a valid API key for a 
+* **OpenAI API Key:** You need a valid API key for running any experiments dependant on LLMs
 * **Mutual subnet** The machines this experiment is running on need to be on the same virtual net, [NetBird](https://app.netbird.io/) works.
 
 ### 2. Installation
